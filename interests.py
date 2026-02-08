@@ -1,4 +1,5 @@
 PERSONA = "4-year-old boy, showing signs of being nerdy"
+PREFERRED_BRANCH = "Noe Valley"
 
 SUMMARIES = [
     (
@@ -23,4 +24,4 @@ SUMMARIES = [
 
 
 def load_interests():
-    return {"persona": PERSONA, "summaries": SUMMARIES}
+    return {"persona": PERSONA, "summaries": SUMMARIES, "preferred_branch": PREFERRED_BRANCH}
