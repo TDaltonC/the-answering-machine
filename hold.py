@@ -1,13 +1,13 @@
 import asyncio
-import json
 import os
-import re
+from datetime import datetime, timezone
 
 from browser_use import Agent, Browser
 from browser_use.llm import ChatAnthropic
 from dotenv import load_dotenv
 
 from config import load_family
+from firestore_client import get_db
 
 load_dotenv()
 
@@ -15,46 +15,47 @@ SFPL_USERNAME = os.environ["SFPL_USERNAME"]
 SFPL_PASSWORD = os.environ["SFPL_PASSWORD"]
 
 
-def load_picks() -> str:
-    with open("picks.json") as f:
-        return json.load(f)["result"]
+def load_recommendations(family_id: str) -> list[dict]:
+    """Load recommendations with status 'recommended' from Firestore."""
+    db = get_db()
+    docs = (
+        db.collection("families")
+        .document(family_id)
+        .collection("recommendations")
+        .where("status", "==", "recommended")
+        .stream()
+    )
+    recs = []
+    for doc in docs:
+        data = doc.to_dict()
+        data["doc_id"] = doc.id
+        recs.append(data)
+    return recs
 
 
-def parse_picks(picks_text: str) -> list[dict]:
-    """Parse FINAL PICKS text into structured book data."""
-    books = []
-    for match in re.finditer(
-        r'"([^"]+)"\s+by\s+([^—\n]+?)(?:\s*—\s*(.+?))?(?:\n|$)',
-        picks_text,
-    ):
-        title = match.group(1)
-        author = match.group(2).strip().strip("*")
-        reason = (match.group(3) or "").strip().rstrip(". ")
-        if ". Available at" in reason:
-            reason = reason.split(". Available at")[0]
-        books.append({"title": title, "author": author, "why": reason})
-    return books
+def format_books_for_prompt(recs: list[dict]) -> str:
+    """Format recommendation docs into text for the agent prompt."""
+    lines = []
+    for i, rec in enumerate(recs, 1):
+        lines.append(f'{i}. "{rec["title"]}" by {rec["author"]}')
+    return "\n".join(lines)
 
 
-def write_holds_md(books: list[dict], hold_results: str, preferred_branch: str) -> None:
-    """Write holds.md based on picks and hold results."""
-    lines = ["# Books on Hold"]
-    for book in books:
-        title_lower = book["title"].lower()
-        if title_lower in hold_results.lower() and "successfully" in hold_results.lower():
-            status = "On hold"
-        else:
-            status = "On hold"
-        branch = preferred_branch
-        why = book["why"] if book["why"] else "Recommended for the child"
-        lines.append(
-            f'- "{book["title"]}" by {book["author"]} | Status: {status} | Branch: {branch} | Why: {why}'
-        )
-    with open("holds.md", "w") as f:
-        f.write("\n".join(lines) + "\n")
+def update_statuses_after_hold(family_id: str, recs: list[dict]) -> None:
+    """Update all recommendation docs to hold_placed after the agent runs."""
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    for rec in recs:
+        db.collection("families").document(family_id).collection(
+            "recommendations"
+        ).document(rec["doc_id"]).update({
+            "status": "hold_placed",
+            "updated_at": now,
+        })
+    print(f"Updated {len(recs)} recommendations to hold_placed")
 
 
-def build_task(picks: str, preferred_branch: str) -> str:
+def build_task(books_text: str, preferred_branch: str) -> str:
     return f"""\
 You need to log into the San Francisco Public Library website and place holds on books.
 
@@ -67,7 +68,7 @@ Go to https://sfpl.org and log in:
   If login fails, report the error and call "done" immediately.
 
 ## STEP 2 — Place holds on these books
-{picks}
+{books_text}
 
 For each book:
 a) Search for the book title using the search bar.
@@ -94,8 +95,19 @@ Do NOT call "done" until you have attempted holds for all books.
 
 async def main():
     family = load_family()
-    picks_text = load_picks()
-    task = build_task(picks_text, family["preferred_branch"])
+    family_id = family.get("family_id", "leo")
+
+    recs = load_recommendations(family_id)
+    if not recs:
+        print("No recommendations with status 'recommended' found. Nothing to hold.")
+        return
+
+    print(f"Found {len(recs)} recommendations to place holds for:")
+    for rec in recs:
+        print(f'  - "{rec["title"]}" by {rec["author"]}')
+
+    books_text = format_books_for_prompt(recs)
+    task = build_task(books_text, family["preferred_branch"])
 
     browser = Browser()
     llm = ChatAnthropic(model="claude-sonnet-4-5-20250929")
@@ -106,9 +118,7 @@ async def main():
     hold_results = result.final_result()
     print(hold_results)
 
-    books = parse_picks(picks_text)
-    write_holds_md(books, hold_results, family["preferred_branch"])
-    print("\nHolds written to holds.md")
+    update_statuses_after_hold(family_id, recs)
 
 
 if __name__ == "__main__":

@@ -1,20 +1,79 @@
 import asyncio
 import os
 import re
+from datetime import datetime, timezone
 
 from browser_use import Agent, Browser
 from browser_use.llm import ChatAnthropic
 from dotenv import load_dotenv
+
+from config import load_family
+from firestore_client import get_db
 
 load_dotenv()
 
 SFPL_USERNAME = os.environ["SFPL_USERNAME"]
 SFPL_PASSWORD = os.environ["SFPL_PASSWORD"]
 
+# Map SFPL status text to our status lifecycle values
+STATUS_MAP = {
+    "on hold": "hold_placed",
+    "in transit": "in_transit",
+    "ready for pickup": "ready",
+}
 
-def load_holds_md() -> str:
-    with open("holds.md") as f:
-        return f.read()
+
+def load_active_holds(family_id: str) -> list[dict]:
+    """Load recommendations with active hold statuses from Firestore."""
+    db = get_db()
+    recs = []
+    for status in ("hold_placed", "in_transit"):
+        docs = (
+            db.collection("families")
+            .document(family_id)
+            .collection("recommendations")
+            .where("status", "==", status)
+            .stream()
+        )
+        for doc in docs:
+            data = doc.to_dict()
+            data["doc_id"] = doc.id
+            recs.append(data)
+    return recs
+
+
+def update_statuses_from_sync(family_id: str, recs: list[dict], agent_text: str) -> None:
+    """Parse agent output and update recommendation statuses."""
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    # Parse agent results: - "Title" by Author | Status: <status> | Branch: <branch>
+    parsed = {}
+    for match in re.finditer(
+        r'-\s+"([^"]+)"\s+by\s+([^|]+)\|\s*Status:\s*([^|]+)\|\s*Branch:\s*([^|\n]+)',
+        agent_text,
+    ):
+        title = match.group(1).strip().lower()
+        status_text = match.group(3).strip().lower()
+        parsed[title] = status_text
+
+    updated = 0
+    for rec in recs:
+        title_lower = rec["title"].lower()
+        if title_lower not in parsed:
+            continue
+        new_status = STATUS_MAP.get(parsed[title_lower])
+        if new_status and new_status != rec.get("status"):
+            db.collection("families").document(family_id).collection(
+                "recommendations"
+            ).document(rec["doc_id"]).update({
+                "status": new_status,
+                "updated_at": now,
+            })
+            updated += 1
+            print(f'  "{rec["title"]}": {rec.get("status")} → {new_status}')
+
+    print(f"Updated {updated} recommendation statuses")
 
 
 def build_task() -> str:
@@ -49,45 +108,19 @@ the site shows. Do NOT call "done" until you have checked all holds.
 """
 
 
-def update_holds_md(agent_result: str) -> None:
-    """Parse the agent's status report and update holds.md."""
-    # Read existing holds.md to preserve "Why" fields
-    existing = {}
-    try:
-        with open("holds.md") as f:
-            for match in re.finditer(
-                r'-\s+"([^"]+)"\s+by\s+([^|]+)\|\s*Status:\s*[^|]+\|\s*Branch:\s*[^|]+\|\s*Why:\s*(.+)',
-                f.read(),
-            ):
-                existing[match.group(1).strip().lower()] = match.group(3).strip()
-    except FileNotFoundError:
-        pass
-
-    # Parse agent results
-    lines = ["# Books on Hold"]
-    for match in re.finditer(
-        r'-\s+"([^"]+)"\s+by\s+([^|]+)\|\s*Status:\s*([^|]+)\|\s*Branch:\s*([^|\n]+)',
-        agent_result,
-    ):
-        title = match.group(1).strip()
-        author = match.group(2).strip()
-        status = match.group(3).strip()
-        branch = match.group(4).strip()
-        why = existing.get(title.lower(), "")
-        lines.append(
-            f'- "{title}" by {author} | Status: {status} | Branch: {branch} | Why: {why}'
-        )
-
-    if len(lines) > 1:
-        with open("holds.md", "w") as f:
-            f.write("\n".join(lines) + "\n")
-        print("\nholds.md updated with current statuses")
-    else:
-        print("\nWarning: could not parse hold statuses from agent result")
-        print("Raw result:", agent_result)
-
-
 async def main():
+    family = load_family()
+    family_id = family.get("family_id", "leo")
+
+    recs = load_active_holds(family_id)
+    if not recs:
+        print("No active holds to sync.")
+        return
+
+    print(f"Found {len(recs)} active holds to check:")
+    for rec in recs:
+        print(f'  - "{rec["title"]}" ({rec.get("status")})')
+
     task = build_task()
 
     browser = Browser()
@@ -98,7 +131,7 @@ async def main():
 
     agent_text = result.final_result()
     print(agent_text)
-    update_holds_md(agent_text)
+    update_statuses_from_sync(family_id, recs, agent_text)
 
 
 if __name__ == "__main__":

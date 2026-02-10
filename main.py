@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 from datetime import datetime, timezone
 
@@ -10,6 +9,7 @@ from dotenv import load_dotenv
 
 from config import load_family
 from firestore_client import get_db
+from parsing import parse_agent_picks
 
 load_dotenv()
 
@@ -69,14 +69,35 @@ Do NOT call "done" until you have at least 2 confirmed books.
 """
 
 
-def save_picks(result) -> None:
-    picks = {
-        "searched_at": datetime.now(timezone.utc).isoformat(),
-        "result": result.final_result(),
-    }
-    with open("picks.json", "w") as f:
-        json.dump(picks, f, indent=2)
-    print("\nPicks saved to picks.json")
+def save_recommendations(family_id: str, agent_result) -> None:
+    """Parse agent picks and write to Firestore as recommendations."""
+    text = agent_result.final_result()
+    books = parse_agent_picks(text)
+    if not books:
+        print("Warning: could not parse any books from agent result")
+        return
+
+    db = get_db()
+    recs_ref = db.collection("families").document(family_id).collection("recommendations")
+
+    # Delete stale "recommended" docs from previous runs
+    stale = recs_ref.where("status", "==", "recommended").stream()
+    for doc in stale:
+        doc.reference.delete()
+
+    now = datetime.now(timezone.utc)
+    for book in books:
+        recs_ref.add({
+            "title": book["title"],
+            "author": book["author"],
+            "why": book["why"],
+            "branch": "",
+            "status": "recommended",
+            "searched_at": now,
+            "updated_at": now,
+        })
+
+    print(f"Saved {len(books)} recommendations to Firestore")
 
 
 def sync_call_summaries(family_id: str) -> int:
@@ -140,7 +161,7 @@ def sync_call_summaries(family_id: str) -> int:
 
 
 def load_summaries(family_id: str) -> list[str]:
-    """Load summaries from Firestore, falling back to interests.py test data."""
+    """Load summaries from Firestore."""
     try:
         db = get_db()
         docs = (
@@ -159,9 +180,7 @@ def load_summaries(family_id: str) -> list[str]:
     except Exception as e:
         print(f"Warning: could not load summaries from Firestore: {e}")
 
-    print("No Firestore summaries found — falling back to interests.py")
-    from interests import load_interests
-    return load_interests()["summaries"]
+    return []
 
 
 async def main():
@@ -174,6 +193,10 @@ async def main():
     print(f"Synced {backfilled} new summaries from Cartesia")
 
     summaries = load_summaries(family_id)
+    if not summaries:
+        print("No summaries found — nothing to search for. Exiting.")
+        return
+
     task = build_task(family, summaries)
 
     browser = Browser()
@@ -181,7 +204,7 @@ async def main():
 
     agent = Agent(task=task, llm=llm, browser=browser)
     result = await agent.run()
-    save_picks(result)
+    save_recommendations(family_id, result)
 
 
 if __name__ == "__main__":

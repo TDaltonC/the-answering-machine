@@ -53,13 +53,13 @@ A kid picks up a dedicated phone and talks to an AI agent about whatever's on th
 The Background Agent pipeline + orchestration:
 
 ```
-main.py          — search SFPL for books based on kid's interests
-hold.py          — log into SFPL and place holds on recommended books
-sync_holds.py    — check hold statuses and update records
-call.py          — write context to Firestore and trigger parent call
-config.py        — family config from Firestore
+main.py             — search SFPL for books based on kid's interests
+hold.py             — log into SFPL and place holds on recommended books
+sync_holds.py       — check hold statuses and update records
+notify_parent.py    — write context to Firestore and trigger parent call
+config.py           — family config from Firestore
 firestore_client.py — shared Firestore client init
-interests.py     — synthetic test data (will be replaced by real transcripts)
+parsing.py          — shared book-parsing regex
 ```
 
 ## Setup
@@ -99,7 +99,7 @@ uv run hold.py
 uv run sync_holds.py
 
 # 4. Call the parent about books ready for pickup
-uv run call.py
+uv run notify_parent.py
 ```
 
 ## Firestore Data Model
@@ -109,5 +109,5 @@ Project: `o-phone-c0b25`
 - **`families/{family_id}`** — family config (parent name, child name/age, preferred branch, phone)
 - **`families/{family_id}/transcripts/{id}`** — conversation logs from voice agents
 - **`families/{family_id}/summaries/{id}`** — AI-generated summaries of conversations
-- **`families/{family_id}/recommendations/{id}`** — books with status tracking (recommended → hold_placed → ready → picked_up)
+- **`families/{family_id}/recommendations/{id}`** — books with status tracking (recommended → hold_placed → in_transit → ready → picked_up)
 - **`pending_calls/{phone}`** — context staging for outbound parent calls

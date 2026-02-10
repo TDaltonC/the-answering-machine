@@ -1,5 +1,4 @@
 import os
-import re
 
 import requests
 from dotenv import load_dotenv
@@ -15,33 +14,26 @@ CARTESIA_AGENT_ID = os.environ["CARTESIA_AGENT_ID"]
 CARTESIA_URL = "https://api.cartesia.ai/twilio/call/outbound"
 
 
-def parse_holds_md() -> list[dict]:
-    """Parse holds.md and return books that are ready for pickup."""
-    try:
-        with open("holds.md") as f:
-            content = f.read()
-    except FileNotFoundError:
-        return []
-
-    ready = []
-    for match in re.finditer(
-        r'-\s+"([^"]+)"\s+by\s+([^|]+)\|\s*Status:\s*([^|]+)\|\s*Branch:\s*([^|]+)\|\s*Why:\s*(.+)',
-        content,
-    ):
-        title = match.group(1).strip()
-        author = match.group(2).strip()
-        status = match.group(3).strip()
-        branch = match.group(4).strip()
-        why = match.group(5).strip()
-
-        if status.lower() == "ready for pickup":
-            ready.append({
-                "title": title,
-                "author": author,
-                "branch": branch,
-                "why": why,
-            })
-    return ready
+def load_ready_books(family_id: str) -> list[dict]:
+    """Load recommendations with status 'ready' from Firestore."""
+    db = get_db()
+    docs = (
+        db.collection("families")
+        .document(family_id)
+        .collection("recommendations")
+        .where("status", "==", "ready")
+        .stream()
+    )
+    books = []
+    for doc in docs:
+        data = doc.to_dict()
+        books.append({
+            "title": data["title"],
+            "author": data["author"],
+            "branch": data.get("branch", ""),
+            "why": data.get("why", ""),
+        })
+    return books
 
 
 def format_books_context(books: list[dict]) -> str:
@@ -90,16 +82,17 @@ def trigger_call(books: list[dict], phone_number: str) -> None:
 
 def main():
     family = load_family()
+    family_id = family.get("family_id", "leo")
     phone_number = family["phone_number"]
 
-    books = parse_holds_md()
+    books = load_ready_books(family_id)
     if not books:
         print("No books are ready for pickup. No call needed.")
         return
 
     print(f"Found {len(books)} book(s) ready for pickup:")
     for b in books:
-        print(f'  - "{b["title"]}" by {b["author"]} at {b["branch"]}')
+        print(f'  - "{b["title"]}" by {b["author"]}')
 
     trigger_call(books, phone_number)
 
