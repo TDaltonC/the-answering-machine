@@ -15,12 +15,16 @@ load_dotenv()
 SFPL_USERNAME = os.environ["SFPL_USERNAME"]
 SFPL_PASSWORD = os.environ["SFPL_PASSWORD"]
 
-# Map SFPL status text to our status lifecycle values
-STATUS_MAP = {
-    "on hold": "hold_placed",
-    "in transit": "in_transit",
-    "ready for pickup": "ready",
-}
+def map_sfpl_status(status_text: str) -> str | None:
+    """Map SFPL status text to our status lifecycle value."""
+    s = status_text.lower()
+    if "ready for pickup" in s:
+        return "ready"
+    if "in transit" in s:
+        return "in_transit"
+    if any(kw in s for kw in ("on hold", "processing", "not ready")):
+        return "hold_placed"
+    return None
 
 
 def load_active_holds(family_id: str) -> list[dict]:
@@ -62,7 +66,7 @@ def update_statuses_from_sync(family_id: str, recs: list[dict], agent_text: str)
         title_lower = rec["title"].lower()
         if title_lower not in parsed:
             continue
-        new_status = STATUS_MAP.get(parsed[title_lower])
+        new_status = map_sfpl_status(parsed[title_lower])
         if new_status and new_status != rec.get("status"):
             db.collection("families").document(family_id).collection(
                 "recommendations"
