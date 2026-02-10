@@ -1,14 +1,20 @@
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 
+import requests
 from browser_use import Agent, Browser
 from browser_use.llm import ChatAnthropic
 from dotenv import load_dotenv
 
 from config import load_family
+from firestore_client import get_db
 
 load_dotenv()
+
+CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY", "")
+CARTESIA_AGENT_ID = os.getenv("CARTESIA_AGENT_ID", "")
 
 
 def build_task(family: dict, summaries: list[str]) -> str:
@@ -73,10 +79,69 @@ def save_picks(result) -> None:
     print("\nPicks saved to picks.json")
 
 
+def sync_call_summaries(family_id: str) -> int:
+    """Fetch recent calls from Cartesia, backfill any missing summaries to Firestore."""
+    if not CARTESIA_API_KEY or not CARTESIA_AGENT_ID:
+        print("Cartesia credentials not set, skipping call sync")
+        return 0
+
+    resp = requests.get(
+        "https://api.cartesia.ai/agents/calls",
+        params={"agent_id": CARTESIA_AGENT_ID, "expand": "transcript", "limit": 20},
+        headers={"X-API-Key": CARTESIA_API_KEY, "Cartesia-Version": "2025-04-16"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    calls = resp.json().get("data", [])
+
+    db = get_db()
+    summaries_ref = db.collection("families").document(family_id).collection("summaries")
+
+    # Get existing call_ids from Firestore
+    existing_docs = summaries_ref.stream()
+    existing_ids = set()
+    for doc in existing_docs:
+        d = doc.to_dict()
+        # Check both doc ID and call_id field
+        existing_ids.add(doc.id)
+        if d.get("call_id"):
+            existing_ids.add(d["call_id"])
+
+    backfilled = 0
+    for call in calls:
+        call_id = call["id"]
+        if call_id in existing_ids:
+            continue
+        if call.get("status") != "completed":
+            continue
+
+        summary = call.get("summary", "")
+        if not summary:
+            continue
+
+        # Extract topics from transcript (user turns only)
+        user_texts = [
+            t["text"] for t in call.get("transcript", []) if t.get("role") == "user"
+        ]
+
+        summaries_ref.document(call_id).set({
+            "summary_text": summary,
+            "topics": [],
+            "mode": "standard",
+            "call_id": call_id,
+            "source": "cartesia_backfill",
+            "created_at": datetime.fromisoformat(call["start_time"].replace("Z", "+00:00")),
+            "user_turns": user_texts,
+        })
+        print(f"  Backfilled summary for call {call_id}")
+        backfilled += 1
+
+    return backfilled
+
+
 def load_summaries(family_id: str) -> list[str]:
     """Load summaries from Firestore, falling back to interests.py test data."""
     try:
-        from firestore_client import get_db
         db = get_db()
         docs = (
             db.collection("families")
@@ -87,19 +152,28 @@ def load_summaries(family_id: str) -> list[str]:
             .stream()
         )
         summaries = [doc.to_dict().get("summary_text", "") for doc in docs]
+        summaries = [s for s in summaries if s]  # drop blanks
         if summaries:
+            print(f"Loaded {len(summaries)} summaries from Firestore")
             return summaries
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: could not load summaries from Firestore: {e}")
 
-    # Fall back to synthetic test data
+    print("No Firestore summaries found — falling back to interests.py")
     from interests import load_interests
     return load_interests()["summaries"]
 
 
 async def main():
     family = load_family()
-    summaries = load_summaries(family.get("family_id", "leo"))
+    family_id = family.get("family_id", "leo")
+
+    # Sync any missed call summaries from Cartesia before loading
+    print("Syncing call summaries from Cartesia...")
+    backfilled = sync_call_summaries(family_id)
+    print(f"Synced {backfilled} new summaries from Cartesia")
+
+    summaries = load_summaries(family_id)
     task = build_task(family, summaries)
 
     browser = Browser()

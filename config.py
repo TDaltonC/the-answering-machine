@@ -8,4 +8,6 @@ def load_family(family_id: str = DEFAULT_FAMILY_ID) -> dict:
     doc = get_db().collection("families").document(family_id).get()
     if not doc.exists:
         raise ValueError(f"Family '{family_id}' not found in Firestore")
-    return doc.to_dict()
+    data = doc.to_dict()
+    data["family_id"] = doc.id
+    return data
