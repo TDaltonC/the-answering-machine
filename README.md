@@ -44,9 +44,9 @@ A kid picks up a dedicated phone and talks to an AI agent about whatever's on th
 | Repo | What | Status |
 |------|------|--------|
 | [the-answering-machine](https://github.com/TDaltonC/the-answering-machine) | Project home, Background Agent, orchestration | Active |
-| [updating-parents](https://github.com/TDaltonC/updating-parents) | Parent Agent (Cartesia Line) | Active |
-| [answer-agent](https://github.com/TDaltonC/answer-agent) | Standard Voice Agent (Cartesia Line) | Not yet built |
-| [private-agent](https://github.com/TDaltonC/private-agent) | 67 Mode Voice Agent (Cartesia Line) | Not yet built |
+| [parent-facing-agent](https://github.com/TDaltonC/parent-facing-agent) | Parent Agent (Cartesia Line) | Active |
+| [answer-agent](https://github.com/TDaltonC/answer-agent) | Standard Voice Agent (Cartesia Line) | Active |
+| [private-agent](https://github.com/TDaltonC/private-agent) | 67 Mode Voice Agent (Cartesia Line) | Active |
 
 ## This Repo
 
@@ -101,6 +101,44 @@ uv run sync_holds.py
 # 4. Call the parent about books ready for pickup
 uv run notify_parent.py
 ```
+
+## Hardware
+
+The phone is a regular analog phone connected to the internet via an ATA (Analog Telephone Adapter). The ATA converts the analog signal to SIP/VoIP and routes the call to Cartesia, which handles connecting to the right voice agent.
+
+### Components
+
+- **Analog phone** — any corded or cordless phone with a standard RJ11 jack
+- **Grandstream HT802** — ATA that bridges the analog phone to SIP. Handles autodial, dial plan, and call routing
+- **TP-Link TL-WR1502X** — portable Wi-Fi 6 travel router so the ATA doesn't need a hardline ethernet connection. Also provides a clean LAN for configuring the ATA's web interface
+
+### What happens when the kid picks up the phone
+
+1. The phone goes **off-hook** and the ATA detects it
+2. In **hotline mode**, the ATA immediately dials the SIP number for the Standard Voice Agent — no dial tone, no waiting. The kid just picks up and starts talking
+3. The ATA sends a SIP INVITE to Cartesia's Twilio trunk, which routes it to the voice agent
+4. Cartesia connects the call to the Standard Voice Agent, which picks up and starts the conversation
+
+The whole sequence takes a few seconds. To the kid, it feels like picking up a phone and someone's there.
+
+### Dial plan
+
+```
+{ <67:[private-agent-number] | 1xxxxxxxxxx }
+```
+
+- **No digits (default)** — autodials to the Standard Voice Agent. This is the normal path for kids
+- **`67`** — routes to the 67 Mode (private) agent. A kid who knows the code dials 67 before the autodial kicks in to get the private, no-summary agent
+- **`1xxxxxxxxxx`** — any 11-digit number passes through as a normal call
+
+### Autodial configuration
+
+The HT802 supports two autodial modes:
+
+- **Hotline** — dials instantly on off-hook. Best for single-agent mode where you want zero friction
+- **Warmline** — waits a configurable delay before autodialing. Required for 67 Mode so the kid has time to punch in `67` before the default number fires
+
+Tune the warmline delay to get the right feel. Too short and kids can't dial 67 in time. Too long and it feels like the phone is broken. The delay also affects perceived responsiveness — the call setup time on Cartesia's end adds a few more seconds on top.
 
 ## Firestore Data Model
 
