@@ -2,6 +2,10 @@
 
 A multi-agent system that talks to kids, finds them library books, and keeps parents in the loop.
 
+![Comic strip: A boy asks his dad how cement dries in the rain. Dad suggests asking the Answering Machine. The boy picks up an orange rotary phone and gets an answer. Later that week, dad gets a text about a library book and nearby construction site. The boy presses his hands into wet cement. Walking home, he asks another question.](docs/comic.jpg)
+
+[Post about why this project exists](https://tdaltonc.github.io/the-answering-machine/)
+
 ## How It Works
 
 A kid picks up a dedicated phone and talks to an AI agent about whatever's on their mind — dinosaurs, space, how cars work. The system listens, figures out what they're curious about, finds relevant books at the local library, places holds, and calls the parent to let them know what's ready for pickup.
